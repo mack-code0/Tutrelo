@@ -2,6 +2,7 @@ const { validationResult } = require("express-validator")
 const fs = require("fs")
 const path = require("path")
 const Post = require("../models/post")
+const User = require("../models/user")
 
 
 
@@ -70,18 +71,29 @@ exports.createPost = (req, res, next) => {
         throw error
     }
 
-    const createPost = new Post({
+    let creator;
+
+    const post = new Post({
         title: title,
         content,
         imageUrl: image.path.split("\\")[0] + "/" + image.path.split("\\")[1],
-        creator: { name: "Tunde" }
+        creator: req.userId
     })
 
-    createPost.save()
+    post.save()
         .then(data => {
+            return User.findById(req.userId)
+        })
+        .then(user => {
+            creator = user
+            user.posts.push(post)
+            return user.save()
+        })
+        .then(result => {
             res.status(201).json({
                 message: "Post created succesfully",
-                post: data
+                post: post,
+                creator: { _id: creator._id, name: creator.name }
             })
         }).catch(err => {
             if (!err.statusCode) {
@@ -117,6 +129,12 @@ exports.updatePost = (req, res, next) => {
 
     Post.findById(postId)
         .then(post => {
+            if(post.creator.toString() !== req.userId){
+                const error = new Error("Not authenticated!")
+                error.statusCode = 403
+                throw error
+            }
+
             if (!post) {
                 const error = new Error("Could not find Post!")
                 error.statusCode = 404
@@ -146,17 +164,28 @@ exports.deletePost = (req, res, next) => {
     Post.findById(postId)
         .then(post => {
             // Check logged in user
+            if(post.creator.toString() !== req.userId){
+                const error = new Error("Not authenticated!")
+                error.statusCode = 403
+                throw error
+            }
+
             if (!post) {
                 const error = new Error("Could not find Post!")
                 error.statusCode = 404
                 throw error
             }
             clearImage(post.imageUrl)
-
             return Post.findByIdAndRemove(postId)
         })
         .then(result => {
-            console.log(result);
+            return User.findById(req.userId)
+        })
+        .then(user=>{
+            user.posts.pull(postId)
+            return user.save()
+        })
+        .then(result=>{
             res.status(200).json({ message: "Post deleted successfully!" })
         })
         .catch(err => {

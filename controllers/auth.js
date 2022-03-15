@@ -1,11 +1,13 @@
 const { validationResult } = require("express-validator")
 const bcryptjs = require("bcryptjs")
+const jwt = require("jsonwebtoken")
 const User = require("../models/user")
 
 
 exports.login = (req, res, next) => {
     const { email, password } = req.body
-    User.find({ email })
+    let loadedUser;
+    User.findOne({ email })
         .then(user => {
             if (!user) {
                 const error = new Error("User not found!")
@@ -13,18 +15,28 @@ exports.login = (req, res, next) => {
                 throw error
             }
 
+            loadedUser = user
             return bcryptjs.compare(password, user.password)
         })
-        .then(isMatch=>{
-            if(!isMatch){
+        .then(isMatch => {
+            if (!isMatch) {
                 const error = new Error("Wrong Password!")
                 error.statusCode = 401
                 throw error
             }
 
+            const token = jwt.sign(
+                {
+                    email: loadedUser.email,
+                    userId: loadedUser._id.toString()
+                },
+                "SomeSuperSecret",
+                { expiresIn: "1h" }
+            )
 
+            res.status(200).json({token: token, userId: loadedUser._id.toString()})
         })
-        .catch(err=>{
+        .catch(err => {
             if (!err.statusCode) {
                 err.statusCode = 500
             }
@@ -53,7 +65,7 @@ exports.postSignup = (req, res, next) => {
             return newUser.save()
         })
         .then(user => {
-            res.status(201).json({ message: "New User created!", userId: user._id })
+            res.status(201).json({ message: "New User created!", userId: user._id.toString() })
         }).catch(err => {
             if (!err.statusCode) {
                 err.statusCode = 500
