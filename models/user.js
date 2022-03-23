@@ -7,7 +7,7 @@ const userSchema = new Schema({
     name: { type: String, required: true },
     status: { type: String, default: "I am new"},
     posts: [
-        { type: Schema.Types.ObjectId, ref: "Post" }
+        { type: mongoose.Types.ObjectId, ref: "post" }
     ]
 })
 

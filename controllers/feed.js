@@ -1,41 +1,42 @@
 const { validationResult } = require("express-validator")
 const fs = require("fs")
+const io = require("../socket")
 const path = require("path")
 const Post = require("../models/post")
 const User = require("../models/user")
 
 
 
-exports.getPosts = (req, res, next) => {
+exports.getPosts = async (req, res, next) => {
     const currentPage = req.query.page || 1
     const perPageValue = 2
-    let totalItems;
-    Post.countDocuments()
-        .then(totalDoc => {
-            totalItems = totalDoc
 
-            return Post.find()
-                .skip((currentPage - 1) * perPageValue)
-                .limit(perPageValue)
-        }).then(posts => {
-            if (!posts) {
-                const error = new Error("Couldn't fetch posts")
-                err.statusCode = 404
-                throw error
-            }
+    try {
+        const totalItems = await Post.countDocuments()
+        const posts = await Post.find()
+            .populate("creator")
+            .sort({ createdAt: -1 })
+            .skip((currentPage - 1) * perPageValue)
+            .limit(perPageValue)
 
-            res.status(200).json({
-                message: "Fetched posts successfully",
-                posts: posts,
-                totalItems
-            })
-        }).catch(err => {
-            if (!err.statusCode) {
-                err.statusCode = 500
-            }
-            next(err)
+        if (!posts) {
+            const error = new Error("Couldn't fetch posts")
+            err.statusCode = 404
+            throw error
+        }
+
+        res.status(200).json({
+            message: "Fetched posts successfully",
+            posts: posts,
+            totalItems
         })
 
+    } catch (error) {
+        if (!error.statusCode) {
+            error.statusCode = 500
+        }
+        next(error)
+    }
 }
 
 exports.getPost = (req, res, next) => {
@@ -59,7 +60,7 @@ exports.getPost = (req, res, next) => {
         })
 }
 
-exports.createPost = (req, res, next) => {
+exports.createPost = async (req, res, next) => {
     const title = req.body.title
     const content = req.body.content
     const image = req.file
@@ -71,8 +72,6 @@ exports.createPost = (req, res, next) => {
         throw error
     }
 
-    let creator;
-
     const post = new Post({
         title: title,
         content,
@@ -80,31 +79,29 @@ exports.createPost = (req, res, next) => {
         creator: req.userId
     })
 
-    post.save()
-        .then(data => {
-            return User.findById(req.userId)
+    try {
+        await post.save()
+        const user = await User.findById(req.userId)
+        user.posts.push(post)
+        await user.save()
+
+        io.getIO().emit("posts", { action: "create", post: { ...post._doc, creator: { _id: req.userId, name: user.name } } })
+
+        res.status(201).json({
+            message: "Post created succesfully",
+            post: post,
+            creator: { _id: user._id, name: user.name }
         })
-        .then(user => {
-            creator = user
-            user.posts.push(post)
-            return user.save()
-        })
-        .then(result => {
-            res.status(201).json({
-                message: "Post created succesfully",
-                post: post,
-                creator: { _id: creator._id, name: creator.name }
-            })
-        }).catch(err => {
-            if (!err.statusCode) {
-                err.statusCode = 500
-            }
-            next(err)
-        })
+    } catch (error) {
+        if (!error.statusCode) {
+            error.statusCode = 500
+        }
+        next(error)
+    }
 }
 
 
-exports.updatePost = (req, res, next) => {
+exports.updatePost = async (req, res, next) => {
     let { title, content, image } = req.body
     const postId = req.params.postId
 
@@ -127,44 +124,43 @@ exports.updatePost = (req, res, next) => {
         throw error
     }
 
-    Post.findById(postId)
-        .then(post => {
-            if(post.creator.toString() !== req.userId){
-                const error = new Error("Not authenticated!")
-                error.statusCode = 403
-                throw error
-            }
+    try {
+        const post = await Post.findById(postId).populate("creator")
+        if (post.creator._id.toString() !== req.userId) {
+            const error = new Error("Not authenticated!")
+            error.statusCode = 403
+            throw error
+        }
 
-            if (!post) {
-                const error = new Error("Could not find Post!")
-                error.statusCode = 404
-                throw error
-            }
-            if (image !== post.imageUrl) {
-                clearImage(post.imageUrl)
-            }
-            post.title = title
-            post.content = content
-            post.imageUrl = image
-            return post.save()
-        })
-        .then(result => {
-            res.status(200).json({ message: "Post Updated", post: result })
-        })
-        .catch(err => {
-            if (!err.statusCode) {
-                err.statusCode = 500
-            }
-            next(err)
-        })
+        if (!post) {
+            const error = new Error("Could not find Post!")
+            error.statusCode = 404
+            throw error
+        }
+        if (image !== post.imageUrl) {
+            clearImage(post.imageUrl)
+        }
+        post.title = title
+        post.content = content
+        post.imageUrl = image
+        const updatedPost = await post.save()
+
+        io.getIO().emit("posts", { action: "update", post: { ...updatedPost._doc } })
+
+        res.status(200).json({ message: "Post Updated", post: updatedPost })
+    } catch (error) {
+        if (!error.statusCode) {
+            error.statusCode = 500
+        }
+        next(error)
+    }
 }
 
-exports.deletePost = (req, res, next) => {
+exports.deletePost = async (req, res, next) => {
     const postId = req.params.postId
-    Post.findById(postId)
-        .then(post => {
-            // Check logged in user
-            if(post.creator.toString() !== req.userId){
+    try {
+        const post = await Post.findById(postId)
+        if (post.creator.toString() !== req.userId.toString()) {
                 const error = new Error("Not authenticated!")
                 error.statusCode = 403
                 throw error
@@ -176,27 +172,24 @@ exports.deletePost = (req, res, next) => {
                 throw error
             }
             clearImage(post.imageUrl)
-            return Post.findByIdAndRemove(postId)
-        })
-        .then(result => {
-            return User.findById(req.userId)
-        })
-        .then(user=>{
-            user.posts.pull(postId)
-            return user.save()
-        })
-        .then(result=>{
+            await Post.findByIdAndRemove(postId)
+
+            const user = await User.findById(req.userId)
+            await user.posts.pull(postId)
+            await user.save()
+
+            io.getIO().emit("posts", {action: "delete", post: postId})
+
             res.status(200).json({ message: "Post deleted successfully!" })
-        })
-        .catch(err => {
-            if (!err.statusCode) {
-                err.statusCode = 500
-            }
-            next(err)
-        })
+    } catch (error) {
+        if (!error.statusCode) {
+            error.statusCode = 500
+        }
+        next(error)
+    }
 }
 
 const clearImage = filePath => {
     filePath = path.join(__dirname, "..", filePath)
-    fs.unlink(filePath, err => console.log(err))
+    fs.unlink(filePath, err => console.log(""))
 }
